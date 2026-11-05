@@ -25,6 +25,19 @@ En un entorno real, la carga de lectura puede ser mucho mayor si:
 - la comunidad es numerosa,
 - el sistema se usa de forma repetida durante emergencias o eventos puntuales.
 
+### Cálculo de almacenamiento estimado a 5 años
+
+**Supuestos de datos:**
+- Un aviso promedio en texto plano (título, descripción corta, metadatos) pesa aproximadamente 2 KB.
+- Estimamos un sobrecosto de base de datos (índices, logs de transacciones) del 50%, lo que nos da 3 KB por registro.
+
+**Cálculo a 5 años:**
+- Total de avisos: 5 avisos/día × 365 días/año × 5 años = 9.125 avisos.
+- Almacenamiento neto de avisos: 9.125 avisos × 3 KB/aviso = 27.375 KB.
+- Total en MB: 27.375 KB / 1024 = **26.7 MB** de almacenamiento estimado a 5 años.
+
+Este volumen ínfimo confirma que el sistema está completamente dominado por la carga de red (lecturas) y no por la capacidad de almacenamiento, justificando plenamente una arquitectura ligera con réplicas.
+
 ### Conclusión
 
 - La plataforma no necesita un patrón de carga equilibrado.
@@ -75,3 +88,4 @@ La separación entre lectura y escritura es una decisión clave para esta soluci
 - la réplica asegura disponibilidad y baja latencia para la lectura.
 
 Esto encaja con el objetivo del proyecto: ofrecer una plataforma simple, rápida y trazable para la comunidad vecinal.
+
