@@ -1,0 +1,55 @@
+http:
+  routers:
+    # Enrutamiento por ruta: todo /api/v1/... exige API key y pasa por el límite de peticiones.
+    avisos:
+      rule: "PathPrefix(`/api/v1/`)"
+      entryPoints:
+        - web
+      middlewares:
+        - cabecera-gateway
+        - api-key
+        - limite-avisos
+      service: balanceador-avisos
+    # /health queda abierto para comprobar el estado sin credenciales.
+    salud:
+      rule: "Path(`/health`)"
+      entryPoints:
+        - web
+      middlewares:
+        - cabecera-gateway
+      service: balanceador-avisos
+
+  middlewares:
+    # Marca cada respuesta que pasa por Traefik (sirve como evidencia de que la petición entró por el gateway).
+    cabecera-gateway:
+      headers:
+        customResponseHeaders:
+          X-Gateway: "traefik"
+
+    # Función 1 del gateway: exige la cabecera X-API-Key (la valida el servicio api-key-auth).
+    api-key:
+      forwardAuth:
+        address: "http://api-key-auth:8080/verify"
+        trustForwardHeader: false
+        authRequestHeaders:
+          - X-API-Key
+
+    # Función 2 del gateway: límite de peticiones por cliente (identificado por su API key).
+    # Valor de demostración: 10 peticiones/s en promedio con ráfaga de 20.
+    limite-avisos:
+      rateLimit:
+        average: 10
+        period: 1s
+        burst: 20
+        sourceCriterion:
+          requestHeaderName: X-API-Key
+
+  services:
+    balanceador-avisos:
+      loadBalancer:
+        servers:
+          - url: "http://balanceador:80"
+        healthCheck:
+          path: /health
+          interval: 10s
+          timeout: 3s
