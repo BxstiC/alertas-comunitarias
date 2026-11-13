@@ -1,0 +1,7 @@
+# Los scripts que se ejecutan dentro de contenedores Linux deben quedar con LF,
+# aunque el repositorio se clone en Windows (core.autocrlf=true).
+*.sh   text eol=lf
+*.conf text eol=lf
+*.yml  text eol=lf
+*.py   text eol=lf
+Dockerfile text eol=lf
