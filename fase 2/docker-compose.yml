@@ -1,0 +1,167 @@
+services:
+  gateway:
+    image: traefik:v3.3
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "8000:80"
+    volumes:
+      - ./gateway/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./gateway/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    depends_on:
+      balanceador:
+        condition: service_healthy
+      api-key-auth:
+        condition: service_healthy
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  api-key-auth:
+    build:
+      context: ./gateway/auth
+    environment:
+      API_KEY: ${API_KEY:-dev-api-key-change-me-to-a-long-random-value}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  balanceador:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./balanceador/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app-1:
+        condition: service_healthy
+      app-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  app-1:
+    build:
+      context: ./app
+    environment: &app-environment
+      INSTANCE_ID: app-1
+      DB_PRIMARY_URL: postgresql://${POSTGRES_USER:-app_user}:${APP_DB_PASSWORD:-dev_app_password_change_me}@db-primary:5432/${POSTGRES_DB:-avisos}
+      DB_REPLICA_URL: postgresql://${POSTGRES_USER:-app_user}:${APP_DB_PASSWORD:-dev_app_password_change_me}@db-replica:5432/${POSTGRES_DB:-avisos}
+    depends_on:
+      db-primary:
+        condition: service_healthy
+      db-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - proxy
+      - data
+    restart: unless-stopped
+
+  app-2:
+    build:
+      context: ./app
+    environment:
+      <<: *app-environment
+      INSTANCE_ID: app-2
+    depends_on:
+      db-primary:
+        condition: service_healthy
+      db-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - proxy
+      - data
+    restart: unless-stopped
+
+  db-primary:
+    image: postgres:16-alpine
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - wal_keep_size=256MB
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-avisos}
+      POSTGRES_USER: ${POSTGRES_USER:-app_user}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-dev_app_password_change_me}
+      REPLICATION_USER: ${REPLICATION_USER:-replicator}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-dev_replication_password_change_me}
+    volumes:
+      - postgres-primary-data:/var/lib/postgresql/data
+      - ./db/primary/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./db/primary/init/01-create-replication-user.sh:/docker-entrypoint-initdb.d/01-create-replication-user.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - data
+    restart: unless-stopped
+
+  db-replica:
+    build:
+      context: ./db/replica
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_DB: ${POSTGRES_DB:-avisos}
+      POSTGRES_USER: ${POSTGRES_USER:-app_user}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-dev_app_password_change_me}
+      REPLICATION_USER: ${REPLICATION_USER:-replicator}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-dev_replication_password_change_me}
+      PRIMARY_HOST: db-primary
+      PRIMARY_PORT: 5432
+    depends_on:
+      db-primary:
+        condition: service_healthy
+    volumes:
+      - postgres-replica-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks:
+      - data
+    restart: unless-stopped
+
+networks:
+  proxy:
+  data:
+    internal: true
+
+volumes:
+  postgres-primary-data:
+  postgres-replica-data:
