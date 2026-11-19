@@ -57,7 +57,7 @@ La primera vez Docker construye las imágenes propias y la réplica clona a la p
 > **Secretos:** `.env` está en `.gitignore` y no se sube al repositorio. `.env.example` solo contiene valores de ejemplo de clase. Para un uso real se debe cambiar `API_KEY` (mínimo 24 caracteres) y las contraseñas.
 
 
-> **Si ya tenías levantada la versión de la Fase 2:** en la Fase 3 la réplica se conecta a la primaria por otro host (`db-primary-repl`). Hay que recrearla desde cero una vez: `powershell -ExecutionPolicy Bypass -File scripts\restaurar.ps1 -Confirmar` (borra los datos de prueba).
+> **Si ya tenías levantada la versión de la Fase 2:** en la Fase 3 la réplica se conecta a la primaria por otro host (`db-primary-repl`). Al arrancar, `replica-entrypoint.sh` reescribe `primary_conninfo` con ese host, así que basta con `docker compose up -d --build`. Si `docker compose logs db-replica` sigue mostrando errores de conexión, recrearla desde cero: `powershell -ExecutionPolicy Bypass -File scripts\restaurar.ps1 -Confirmar` (borra los datos de prueba).
 
 ## API
 
@@ -89,8 +89,9 @@ Cabeceras de respuesta:
 Desde la carpeta `fase2`:
 
 ```powershell
-# API key desde .env, sin imprimirla
-$apiKey = ((Get-Content .env | Where-Object { $_ -match '^API_KEY=' }) -replace '^API_KEY=', '').Trim()
+# API key desde .env (o .env.example si no se creó .env), sin imprimirla
+$envFile = if (Test-Path .env) { '.env' } else { '.env.example' }
+$apiKey = ((Get-Content $envFile | Where-Object { $_ -match '^API_KEY=' }) -replace '^API_KEY=', '').Trim()
 
 # Salud (sin API key)
 curl.exe -i http://localhost:8000/health
