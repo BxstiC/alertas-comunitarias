@@ -9,3 +9,6 @@ __pycache__/
 
 # Datos locales de base de datos (si se usan bind mounts)
 **/pgdata/
+
+# Salidas de las pruebas de falla
+**/escrituras*.csv

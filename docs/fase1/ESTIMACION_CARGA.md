@@ -12,11 +12,11 @@ La naturaleza del problema indica que el sistema tendrá una proporción alta de
 
 ### Ejemplo de escenario inicial
 
-- Se publican 20 avisos al día.
+- Se publican 5 avisos al día.
 - Cada aviso puede ser consultado unas 10 veces, en promedio.
 - Entonces, la carga estimada sería:
-  - Escrituras: 20 avisos/día
-  - Lecturas: aproximadamente 200 consultas/día
+  - Escrituras: 5 avisos/día
+  - Lecturas: aproximadamente 50 consultas/día
 
 En un entorno real, la carga de lectura puede ser mucho mayor si:
 
@@ -88,4 +88,3 @@ La separación entre lectura y escritura es una decisión clave para esta soluci
 - la réplica asegura disponibilidad y baja latencia para la lectura.
 
 Esto encaja con el objetivo del proyecto: ofrecer una plataforma simple, rápida y trazable para la comunidad vecinal.
-

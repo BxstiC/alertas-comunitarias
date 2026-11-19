@@ -56,7 +56,8 @@ services:
       context: ./app
     environment: &app-environment
       INSTANCE_ID: app-1
-      DB_PRIMARY_URL: postgresql://${POSTGRES_USER:-app_user}:${APP_DB_PASSWORD:-dev_app_password_change_me}@db-primary:5432/${POSTGRES_DB:-avisos}
+      # DB_PRIMARY_HOST permite apuntar las escrituras a la réplica promovida (scripts/failover.ps1).
+      DB_PRIMARY_URL: postgresql://${POSTGRES_USER:-app_user}:${APP_DB_PASSWORD:-dev_app_password_change_me}@${DB_PRIMARY_HOST:-db-primary}:5432/${POSTGRES_DB:-avisos}
       DB_REPLICA_URL: postgresql://${POSTGRES_USER:-app_user}:${APP_DB_PASSWORD:-dev_app_password_change_me}@db-replica:5432/${POSTGRES_DB:-avisos}
     depends_on:
       db-primary:
@@ -109,6 +110,8 @@ services:
       - -c
       - wal_keep_size=256MB
       - -c
+      - wal_sender_timeout=10s
+      - -c
       - hba_file=/etc/postgresql/pg_hba.conf
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-avisos}
@@ -127,12 +130,19 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - data
+      data:
+      # Red solo para el streaming. El alias db-primary-repl existe únicamente aquí, así
+      # se puede cortar la replicación sin cortar a la app (prueba de falla 2).
+      replicacion:
+        aliases:
+          - db-primary-repl
     restart: unless-stopped
 
   db-replica:
     build:
       context: ./db/replica
+    # wal_receiver_timeout: la réplica nota en <=10 s que perdió a la primaria (por defecto 60 s).
+    command: ["postgres", "-c", "wal_receiver_timeout=10s"]
     environment:
       PGDATA: /var/lib/postgresql/data
       POSTGRES_DB: ${POSTGRES_DB:-avisos}
@@ -140,7 +150,7 @@ services:
       POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-dev_app_password_change_me}
       REPLICATION_USER: ${REPLICATION_USER:-replicator}
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-dev_replication_password_change_me}
-      PRIMARY_HOST: db-primary
+      PRIMARY_HOST: db-primary-repl
       PRIMARY_PORT: 5432
     depends_on:
       db-primary:
@@ -155,11 +165,14 @@ services:
       start_period: 20s
     networks:
       - data
+      - replicacion
     restart: unless-stopped
 
 networks:
   proxy:
   data:
+    internal: true
+  replicacion:
     internal: true
 
 volumes:

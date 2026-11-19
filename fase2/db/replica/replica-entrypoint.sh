@@ -37,4 +37,16 @@ chmod 600 "$passfile"
 export PGPASSFILE="$passfile"
 unset PGPASSWORD
 
+# Mientras siga siendo standby, primary_conninfo se reescribe en cada arranque con el
+# PRIMARY_HOST actual y el .pgpass del volumen. Así una réplica creada con otro host
+# (p. ej. db-primary en la versión anterior) no queda intentando conectar sin contraseña.
+# Si fue promovida (sin standby.signal) no se toca.
+if [[ -f "$PGDATA/standby.signal" ]]; then
+  # Host y usuario son identificadores simples (sin espacios ni comillas).
+  conninfo="host=''$PRIMARY_HOST'' port=$PRIMARY_PORT user=''$REPLICATION_USER'' passfile=''$passfile'' application_name=db-replica"
+  sed -i '/^primary_conninfo[[:space:]]*=/d' "$PGDATA/postgresql.auto.conf"
+  printf "primary_conninfo = '%s'\n" "$conninfo" >> "$PGDATA/postgresql.auto.conf"
+  chown postgres:postgres "$PGDATA/postgresql.auto.conf"
+fi
+
 exec /usr/local/bin/docker-entrypoint.sh "$@"

@@ -3,6 +3,8 @@ Servicio de Alertas Comunitarias Vecinales.
 
 - Escrituras  -> base de datos PRIMARIA (cabecera X-DB: primary).
 - Lecturas    -> RÉPLICA por streaming (cabecera X-DB: replica).
+  Si la réplica está caída o dejó de recibir WAL (posibles datos viejos), la
+  lectura se atiende en la primaria (X-DB: primary) y X-Replica-Estado lo explica.
 - Todas las respuestas llevan X-Instance con el valor de INSTANCE_ID.
 - Stateless: no se guarda nada en memoria ni en disco; todo vive en PostgreSQL.
   (Los pools de conexiones no son estado de negocio: se recrean al reiniciar.)
@@ -14,9 +16,10 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, AsyncIterator
+from typing import Annotated, Any, AsyncIterator, Awaitable, Callable
 
 import asyncpg
 from fastapi import FastAPI, HTTPException, Path, Query, Request, status
@@ -66,6 +69,18 @@ CREATE TABLE IF NOT EXISTS avisos (
 );
 CREATE INDEX IF NOT EXISTS idx_avisos_fecha           ON avisos (fecha DESC);
 CREATE INDEX IF NOT EXISTS idx_avisos_categoria_fecha ON avisos (categoria, fecha DESC);
+"""
+
+
+# Estado de la réplica, consultado en la MISMA conexión antes de cada lectura.
+# - en_recuperacion = false  -> el nodo fue promovido: ya es primaria, sus datos son los vigentes.
+# - recibiendo      = false  -> el walreceiver no está conectado a la primaria: los datos
+#                               pueden estar desactualizados (comunicación cortada).
+# - pausada         = true   -> la réplica recibe WAL pero no lo aplica.
+ESTADO_REPLICA_SQL = """
+SELECT pg_is_in_recovery() AS en_recuperacion,
+       EXISTS (SELECT 1 FROM pg_stat_wal_receiver WHERE status = 'streaming') AS recibiendo,
+       CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused() ELSE false END AS pausada
 """
 
 
@@ -121,7 +136,7 @@ class AvisoLista(BaseModel):
 # ---------------------------------------------------------------------------
 # Conexión a BD
 # ---------------------------------------------------------------------------
-async def crear_pool(dsn: str, nombre: str, solo_lectura: bool) -> asyncpg.Pool:
+async def crear_pool(dsn: str, nombre: str, solo_lectura: bool, min_size: int = DB_POOL_MIN) -> asyncpg.Pool:
     server_settings = {"application_name": f"avisos-{INSTANCE_ID}-{nombre}"}
     if solo_lectura:
         # Defensa adicional: aunque la réplica ya es read-only, el pool también lo es.
@@ -131,7 +146,7 @@ async def crear_pool(dsn: str, nombre: str, solo_lectura: bool) -> asyncpg.Pool:
         try:
             pool = await asyncpg.create_pool(
                 dsn=dsn,
-                min_size=DB_POOL_MIN,
+                min_size=min_size,
                 max_size=DB_POOL_MAX,
                 command_timeout=DB_COMMAND_TIMEOUT,
                 timeout=5,
@@ -166,7 +181,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.primary = await crear_pool(DB_PRIMARY_URL, "primary", solo_lectura=False)
     try:
         await inicializar_esquema(app.state.primary)
-        app.state.replica = await crear_pool(DB_REPLICA_URL, "replica", solo_lectura=True)
+        # min_size=0: el pool de la réplica no abre conexiones al arrancar, así una
+        # instancia puede iniciar aunque la réplica esté caída (las lecturas irán a la primaria).
+        app.state.replica = await crear_pool(DB_REPLICA_URL, "replica", solo_lectura=True, min_size=0)
     except Exception:
         await app.state.primary.close()
         raise
@@ -213,6 +230,8 @@ app.add_middleware(InstanceHeaderMiddleware)
 # Manejo de errores (siempre con X-Instance; X-DB cuando aplica)
 # ---------------------------------------------------------------------------
 def x_db_de_ruta(request: Request) -> str:
+    if request.url.path.startswith("/api/v1/replicacion"):
+        return "primary+replica"
     if request.url.path.startswith("/api/v1/avisos"):
         return "primary" if request.method == "POST" else "replica"
     return "none"
@@ -247,9 +266,71 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# Lecturas: réplica primero, primaria como respaldo
 # ---------------------------------------------------------------------------
 COLUMNAS = "id, titulo, descripcion, categoria, fecha"
+
+Consulta = Callable[[asyncpg.Connection], Awaitable[Any]]
+
+
+@dataclass
+class Lectura:
+    resultado: Any
+    x_db: str             # "replica" o "primary": base que respondió
+    replica_estado: str   # streaming | promovida | desconectada | pausada | caida
+
+    def cabeceras(self) -> dict[str, str]:
+        h = {"X-Instance": INSTANCE_ID, "X-DB": self.x_db, "X-Replica-Estado": self.replica_estado}
+        if self.x_db == "replica" and self.replica_estado in ("desconectada", "pausada"):
+            # Solo pasa si la primaria TAMBIÉN falló: se entrega el dato viejo, avisando.
+            h["X-Datos-Desactualizados"] = "posible"
+        return h
+
+
+def clasificar_replica(fila: asyncpg.Record) -> str:
+    if not fila["en_recuperacion"]:
+        return "promovida"
+    if fila["pausada"]:
+        return "pausada"
+    if not fila["recibiendo"]:
+        return "desconectada"
+    return "streaming"
+
+
+async def leer(request: Request, consulta: Consulta) -> Lectura:
+    """
+    1. Réplica conectada a la primaria (streaming) o ya promovida -> se lee en la réplica.
+    2. Réplica desconectada, pausada o caída -> se lee en la primaria (dato fresco).
+    3. Primaria también caída pero la réplica responde -> dato posiblemente viejo,
+       avisado con X-Datos-Desactualizados (en un tablón de avisos es mejor que un 503).
+    """
+    replica: asyncpg.Pool = request.app.state.replica
+    primary: asyncpg.Pool = request.app.state.primary
+
+    estado = "caida"
+    try:
+        async with replica.acquire() as conn:
+            estado = clasificar_replica(await conn.fetchrow(ESTADO_REPLICA_SQL))
+            if estado in ("streaming", "promovida"):
+                return Lectura(await consulta(conn), "replica", estado)
+    except DB_ERRORS as exc:
+        log.warning("Réplica no disponible: %s", exc)
+
+    log.warning("Réplica en estado '%s': la lectura la atiende la primaria", estado)
+    try:
+        async with primary.acquire() as conn:
+            return Lectura(await consulta(conn), "primary", estado)
+    except DB_ERRORS:
+        if estado == "caida":
+            raise
+        log.error("Primaria caída y réplica '%s': entrego datos posiblemente desactualizados", estado)
+        async with replica.acquire() as conn:
+            return Lectura(await consulta(conn), "replica", estado)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.get("/health")
@@ -277,6 +358,8 @@ async def crear_aviso(aviso: AvisoCreate, request: Request) -> JSONResponse:
             aviso.categoria.value,
             aviso.fecha,
         )
+    # Lectura de lo recién escrito: la respuesta trae el aviso completo, así el cliente
+    # no necesita volver a pedirlo (la réplica podría no tenerlo todavía).
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content=jsonable_encoder(Aviso(**dict(fila))),
@@ -295,11 +378,10 @@ async def listar_avisos(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
 ) -> JSONResponse:
-    pool: asyncpg.Pool = request.app.state.replica
     cat = categoria.value if categoria else None
     filtro = "fecha >= now() - make_interval(days => $1) AND ($2::varchar IS NULL OR categoria = $2)"
 
-    async with pool.acquire() as conn:
+    async def consulta(conn: asyncpg.Connection) -> AvisoLista:
         # Misma transacción (REPEATABLE READ) => total e items son coherentes entre sí.
         async with conn.transaction(isolation="repeatable_read", readonly=True):
             total = await conn.fetchval(f"SELECT count(*) FROM avisos WHERE {filtro}", VIGENCIA_DIAS, cat)
@@ -312,14 +394,10 @@ async def listar_avisos(
                 """,
                 VIGENCIA_DIAS, cat, limit, offset,
             )
+        return AvisoLista(total=total, limit=limit, offset=offset, items=[Aviso(**dict(f)) for f in filas])
 
-    cuerpo = AvisoLista(
-        total=total, limit=limit, offset=offset, items=[Aviso(**dict(f)) for f in filas]
-    )
-    return JSONResponse(
-        content=jsonable_encoder(cuerpo),
-        headers={"X-Instance": INSTANCE_ID, "X-DB": "replica"},
-    )
+    lectura = await leer(request, consulta)
+    return JSONResponse(content=jsonable_encoder(lectura.resultado), headers=lectura.cabeceras())
 
 
 @app.get("/api/v1/avisos/{aviso_id}", response_model=Aviso)
@@ -327,13 +405,62 @@ async def detalle_aviso(
     request: Request,
     aviso_id: Annotated[int, Path(ge=1)],
 ) -> JSONResponse:
-    pool: asyncpg.Pool = request.app.state.replica
-    async with pool.acquire() as conn:
-        fila = await conn.fetchrow(f"SELECT {COLUMNAS} FROM avisos WHERE id = $1", aviso_id)
-    if fila is None:
-        # Puede ocurrir brevemente justo tras un POST por el lag de replicación.
+    async def consulta(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        return await conn.fetchrow(f"SELECT {COLUMNAS} FROM avisos WHERE id = $1", aviso_id)
+
+    lectura = await leer(request, consulta)
+
+    if lectura.resultado is None and lectura.x_db == "replica":
+        # Lectura de lo recién escrito: el aviso puede existir en la primaria y aún no
+        # haber llegado a la réplica (lag). Antes de responder 404 se confirma en la primaria.
+        try:
+            async with request.app.state.primary.acquire() as conn:
+                fila = await consulta(conn)
+            if fila is not None:
+                log.info("Aviso %d aún no estaba en la réplica: respondido desde la primaria", aviso_id)
+                lectura = Lectura(fila, "primary", lectura.replica_estado)
+        except DB_ERRORS as exc:
+            log.warning("No se pudo confirmar el 404 en la primaria: %s", exc)
+
+    if lectura.resultado is None:
         raise HTTPException(status_code=404, detail="Aviso no encontrado")
     return JSONResponse(
-        content=jsonable_encoder(Aviso(**dict(fila))),
-        headers={"X-Instance": INSTANCE_ID, "X-DB": "replica"},
+        content=jsonable_encoder(Aviso(**dict(lectura.resultado))),
+        headers=lectura.cabeceras(),
+    )
+
+
+@app.get("/api/v1/replicacion")
+async def estado_replicacion(request: Request) -> JSONResponse:
+    """Diagnóstico para las pruebas de falla: qué ve cada base en este momento."""
+    resultado: dict[str, Any] = {"instance_id": INSTANCE_ID}
+    try:
+        async with request.app.state.primary.acquire() as conn:
+            filas = await conn.fetch(
+                """
+                SELECT application_name, client_addr::text AS cliente, state,
+                       pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)::bigint AS bytes_pendientes
+                FROM pg_stat_replication
+                """
+            )
+            resultado["primary"] = {
+                "ok": True,
+                "ultimo_id": await conn.fetchval("SELECT max(id) FROM avisos"),
+                "replicas_conectadas": [dict(f) for f in filas],
+            }
+    except DB_ERRORS as exc:
+        resultado["primary"] = {"ok": False, "error": type(exc).__name__}
+    try:
+        async with request.app.state.replica.acquire() as conn:
+            estado = await conn.fetchrow(ESTADO_REPLICA_SQL)
+            resultado["replica"] = {
+                "ok": True,
+                "estado": clasificar_replica(estado),
+                "ultimo_id": await conn.fetchval("SELECT max(id) FROM avisos"),
+            }
+    except DB_ERRORS as exc:
+        resultado["replica"] = {"ok": False, "error": type(exc).__name__}
+    return JSONResponse(
+        content=jsonable_encoder(resultado),
+        headers={"X-Instance": INSTANCE_ID, "X-DB": "primary+replica"},
     )
