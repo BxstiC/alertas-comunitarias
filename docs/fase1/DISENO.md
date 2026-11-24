@@ -10,6 +10,17 @@ La solución propuesta consiste en una plataforma centralizada donde las persona
 
 - Vecino consultante: revisa los avisos y busca información actualizada.
 - Vecino que publica: registra un aviso para que la comunidad lo conozca.
+- Municipalidad: publica de forma automática los cortes programados y las emergencias.
+
+### Clientes que consumen la API
+
+| Cliente | Quién lo usa | Qué hace | API key |
+|---|---|---|---|
+| **Web** | Vecinos desde el navegador | Lee la lista y el detalle, y publica avisos | `API_KEY` |
+| **App móvil** | Vecinos desde el celular | Lo mismo que la web; es el cliente que más consulta durante una emergencia | `API_KEY_MOVIL` |
+| **Sistema municipal** (externo) | Integración de la municipalidad | Publica avisos de `corte_servicio` y `emergencia` sin intervención humana | `API_KEY_MUNICIPIO` |
+
+Tres clientes con necesidades distintas justifican un API gateway. Cada uno tiene su propia API key, se puede revocar a uno sin afectar a los demás, y el límite de peticiones se cuenta por cliente: si la app móvil se satura en una emergencia, la web y el municipio siguen funcionando.
 
 ### Justificación del patrón de lectura/escritura
 
@@ -39,8 +50,10 @@ La solución debe cumplir estos ocho requisitos funcionales:
 
 ### Disponibilidad
 
+- **Objetivo: 99,5 % mensual para las lecturas**, es decir, como máximo 3,6 horas sin servicio al mes (30 días × 24 h × 0,5 %).
 - La plataforma debe seguir funcionando aunque una instancia de la aplicación falle.
 - El sistema debe tolerar la caída de una instancia sin que se interrumpa el servicio de consulta.
+- Las escrituras pueden quedar detenidas mientras dura un failover de la primaria (ver RTO).
 
 ### RPO (Recovery Point Objective)
 
@@ -59,38 +72,39 @@ La solución debe cumplir estos ocho requisitos funcionales:
 
 ## 4. Estimación de carga
 
+El detalle está en [ESTIMACION_CARGA.md](./ESTIMACION_CARGA.md). La arquitectura se dimensiona para la **escala objetivo: una comuna de 10.000 vecinos registrados**.
+
 ### Supuestos
 
-- La comunidad tiene 500 vecinos activos.
-- En promedio, se publican 5 avisos por día.
-- Cada aviso es consultado 10 veces como mínimo.
-- En la hora punta, la actividad puede llegar a triplicarse.
-- El contenido promedio de un aviso es 2 KB.
-- El sistema conserva avisos recientes y relevantes durante 5 años.
+- 10.000 vecinos registrados; el 30 % (3.000) usa la plataforma cada día.
+- Cada vecino activo hace 5 lecturas al día (la lista y de 2 a 4 detalles).
+- Se publican 100 avisos al día: 80 de vecinos y 20 automáticos del municipio.
+- El 20 % del tráfico diario se concentra en la hora punta (19:00–20:00).
+- En una emergencia (p. ej. un corte de agua masivo), los 3.000 vecinos activos consultan 3 veces en 10 minutos.
+- Un aviso ocupa 2 KB; con índices y metadatos (+50 %), 3 KB.
+- Los avisos se conservan 5 años.
 
-### Lecturas y escrituras estimadas
+### Lecturas y escrituras por segundo
 
-#### Promedio diario
+| Momento | Lecturas/s | Escrituras/s | Relación |
+|---|---|---|---|
+| Promedio (15.000 lecturas y 100 escrituras al día / 86.400 s) | 0,17 | 0,0012 | 150:1 |
+| Hora punta (20 % del día en 3.600 s) | 0,83 | 0,0056 | 150:1 |
+| Pico de emergencia (9.000 lecturas y 30 avisos en 600 s) | **15** | 0,05 | 300:1 |
 
-- Escrituras: 5 avisos/día
-- Lecturas: 50 consultas/día
-- Relación estimada: 10:1
-
-#### En hora punta
-
-- La actividad de referencia puede aumentar hasta tres veces respecto del promedio; las consultas se concentran alrededor de avisos de mayor interés.
-- La proporción de diseño se mantiene en al menos 10 lecturas por cada escritura. No se asigna un valor de solicitudes por segundo sin una medición de tráfico que lo respalde.
+En todos los casos se cumple ampliamente la relación mínima de 10:1. El pico de 15 lecturas/s llega justo cuando el servicio es más necesario.
 
 ### Almacenamiento estimado a 5 años
 
-- Avisos en 5 años: 5 avisos/día × 365 días/año × 5 años = **9.125 avisos**.
-- Tamaño promedio de un aviso (texto, título, descripción y metadatos): **2 KB**.
-- Sobrecosto estimado de almacenamiento por registro para índices, metadatos y logs de transacciones: **50%**; por tanto, 2 KB × 1,5 = **3 KB por aviso**.
-- Almacenamiento total estimado: 9.125 avisos × 3 KB = 27.375 KB; 27.375 KB / 1.024 = **26,7 MB** a 5 años.
+- 100 avisos/día × 365 días × 5 años = **182.500 avisos**.
+- 182.500 avisos × 3 KB = 547.500 KB / 1.024 ≈ **535 MB**.
 
-La estimación considera registros e índices; no incluye archivos adjuntos ni copias de seguridad. El supuesto de 5 avisos diarios y 2 KB por aviso es la base del cálculo.
+La estimación incluye registros e índices; no incluye archivos adjuntos ni respaldos. Como referencia, el piloto en una junta de vecinos (500 vecinos y 5 avisos/día) ocupa ≈ 26,7 MB en 5 años.
 
-Esto confirma que el sistema es pequeño y viable para una infraestructura con una base de datos PostgreSQL y una réplica en Docker Compose.
+### Conclusión de la estimación
+
+- El volumen cabe sin problema en una primaria y una réplica PostgreSQL.
+- Una instancia de la app atiende 15 lecturas/s. Las 2 instancias detrás del balanceador se justifican por **disponibilidad** (no perder el servicio en plena emergencia si cae una) y por **crecimiento**: con 10 comunas el pico sería ~150 lecturas/s y bastaría agregar instancias.
 
 ## 5. Diagrama lógico
 
@@ -145,9 +159,9 @@ Archivo editable: [DIAGRAMA_FISICO.drawio](./diagramas/DIAGRAMA_FISICO.drawio).
 ### API Gateway
 
 **Qué problema resuelve:**
-- Centraliza la entrada a la aplicación.
+- Centraliza la entrada de los tres clientes (web, app móvil y sistema municipal).
 - Permite enrutar por ruta, por ejemplo /api/v1/avisos.
-- Puede aplicar políticas como API key o limitación de peticiones por cliente.
+- Identifica a cada cliente por su API key y limita sus peticiones por separado, así un cliente que se satura no deja sin servicio a los demás.
 
 **Alternativa:**
 - Usar un balanceador avanzado como HAProxy para hacer ambas funciones, pero limitaría las capacidades de gestión de API (validación JWT, transformaciones de cuerpos, auditoría, y políticas por ruta).

@@ -21,6 +21,19 @@ a disposición de toda la comunidad.
 - **Vecino consultante:** revisa los avisos disponibles para mantenerse
   informado.
 - **Vecino que publica:** registra avisos relevantes para la comunidad.
+- **Municipalidad:** publica de forma automática cortes programados y emergencias.
+
+## Clientes de la API
+
+- **Web:** vecinos desde el navegador.
+- **App móvil:** vecinos desde el celular; es la que más consulta durante una emergencia.
+- **Sistema municipal (externo):** publica avisos de forma automática.
+
+Cada cliente tiene su propia API key en el gateway.
+
+## Escala objetivo
+
+Una comuna de **10.000 vecinos registrados**, con 3.000 activos al día, 100 avisos diarios y hasta 15 lecturas por segundo en una emergencia. El cálculo está en [ESTIMACION_CARGA.md](ESTIMACION_CARGA.md).
 
 ## Objetivo del proyecto
 

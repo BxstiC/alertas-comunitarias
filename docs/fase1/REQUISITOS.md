@@ -27,7 +27,7 @@
 ## 2. Requisitos no funcionales (Objetivos medibles)
 
 - **Latencia objetivo:** Las consultas de lectura (`GET /avisos`) deben responder en menos de 500 ms. Las escrituras (`POST /avisos`) deben responder en menos de 1 segundo.
-- **Disponibilidad:** El sistema debe mantener su capacidad de respuesta (lecturas) si una de las instancias de la aplicación cae.
+- **Disponibilidad:** 99,5 % mensual para las lecturas (máximo 3,6 h sin servicio al mes). El sistema debe seguir respondiendo lecturas si una de las instancias de la aplicación cae.
 - **RPO (Recovery Point Objective):** Máximo 5 minutos. Se acepta la pérdida de los avisos publicados en los últimos 5 minutos ante una falla catastrófica de la primaria no replicada.
 - **RTO (Recovery Time Objective):** Máximo 30 minutos para restaurar el flujo de publicación (escrituras) promoviendo la réplica o levantando una nueva base primaria.
 

@@ -4,39 +4,49 @@
 
 La naturaleza del problema indica que el sistema tendrá una proporción alta de lecturas respecto a escrituras. Un aviso comunitario suele publicarse una sola vez, pero puede ser consultado muchas veces por distintos vecinos a lo largo del día.
 
-### Suposición base
+Se estiman dos escenarios: un **piloto** en una junta de vecinos y la **escala objetivo**, una comuna completa, que es para la que se dimensiona la arquitectura.
 
-- 1 publicación = 1 aviso nuevo
-- 10 lecturas por cada aviso publicado
-- Proporción esperada: 10:1 en favor de la lectura
+### Supuestos explícitos
 
-### Ejemplo de escenario inicial
+| Supuesto | Piloto | Escala objetivo |
+|---|---|---|
+| Vecinos registrados | 500 | **10.000** (comuna mediana) |
+| Vecinos activos al día | 30 % → 150 | 30 % → **3.000** |
+| Lecturas por vecino activo al día (lista + 2 a 4 detalles) | 5 | 5 |
+| Avisos publicados al día (vecinos + municipio) | 5 | **100** (80 de vecinos y 20 automáticos del municipio) |
+| Tráfico concentrado en la hora punta (19:00–20:00) | 20 % del día | 20 % del día |
+| Pico de emergencia (p. ej. corte de agua masivo) | — | los 3.000 activos consultan 3 veces en 10 minutos |
+| Tamaño de un aviso con índices y metadatos | 3 KB | 3 KB |
 
-- Se publican 5 avisos al día.
-- Cada aviso puede ser consultado unas 10 veces, en promedio.
-- Entonces, la carga estimada sería:
-  - Escrituras: 5 avisos/día
-  - Lecturas: aproximadamente 50 consultas/día
+### Lecturas y escrituras
 
-En un entorno real, la carga de lectura puede ser mucho mayor si:
+**Por día:**
 
-- hay distintas categorías activas,
-- los vecinos revisan varias veces la misma información,
-- la comunidad es numerosa,
-- el sistema se usa de forma repetida durante emergencias o eventos puntuales.
+- Piloto: 150 × 5 = **750 lecturas/día** y **5 escrituras/día** → relación 150:1.
+- Escala objetivo: 3.000 × 5 = **15.000 lecturas/día** y **100 escrituras/día** → relación **150:1**.
 
-### Cálculo de almacenamiento estimado a 5 años
+**Por segundo, escala objetivo:**
 
-**Supuestos de datos:**
-- Un aviso promedio en texto plano (título, descripción corta, metadatos) pesa aproximadamente 2 KB.
-- Estimamos un sobrecosto de base de datos (índices, logs de transacciones) del 50%, lo que nos da 3 KB por registro.
+| Momento | Lecturas/s | Escrituras/s | Cálculo |
+|---|---|---|---|
+| Promedio (24 h) | **0,17** | **0,0012** (≈ 1 cada 14 min) | 15.000 / 86.400 · 100 / 86.400 |
+| Hora punta | **0,83** | **0,0056** (≈ 1 cada 3 min) | 20 % → 3.000 / 3.600 · 20 / 3.600 |
+| Pico de emergencia (10 min) | **15** | **0,05** (30 avisos en 10 min) | 3.000 × 3 / 600 · 30 / 600 |
 
-**Cálculo a 5 años:**
-- Total de avisos: 5 avisos/día × 365 días/año × 5 años = 9.125 avisos.
-- Almacenamiento neto de avisos: 9.125 avisos × 3 KB/aviso = 27.375 KB.
-- Total en MB: 27.375 KB / 1024 = **26.7 MB** de almacenamiento estimado a 5 años.
+La relación de lecturas a escrituras se mantiene muy por sobre 10:1 en todos los casos (150:1 en promedio y 300:1 en una emergencia). Justo en una emergencia es cuando más se lee y cuando el servicio no puede caerse.
 
-Este volumen ínfimo confirma que el sistema está completamente dominado por la carga de red (lecturas) y no por la capacidad de almacenamiento, justificando plenamente una arquitectura ligera con réplicas.
+### Qué significan estos números para la arquitectura
+
+- **Réplica de lectura:** con 150:1, más del 99 % de las consultas a la base son lecturas. La réplica las absorbe y la primaria queda libre para las escrituras.
+- **Balanceador y 2 instancias:** 15 lecturas/s las atiende una sola instancia de FastAPI. El balanceador no se justifica por el volumen actual, sino por **disponibilidad** (si cae una instancia en plena emergencia, la otra sigue respondiendo) y por **crecimiento** (si el sistema se extiende a 10 comunas, el pico llega a ~150 lecturas/s y basta con agregar instancias detrás del mismo balanceador).
+- **Límite de peticiones del gateway:** en la demo es de 10 req/s por cliente, con ráfaga de 20, para poder mostrar el 429. Con la escala objetivo, el cliente web debería tener al menos 50 req/s para cubrir el pico de emergencia (15 lecturas/s) con margen.
+
+### Almacenamiento a 5 años
+
+- Piloto: 5 avisos/día × 365 × 5 = 9.125 avisos × 3 KB = 27.375 KB ≈ **26,7 MB**.
+- Escala objetivo: 100 avisos/día × 365 × 5 = **182.500 avisos** × 3 KB = 547.500 KB / 1.024 ≈ **535 MB**.
+
+Medio gigabyte en 5 años cabe en cualquier servidor. El sistema está dominado por la cantidad de lecturas, no por el almacenamiento, y eso refuerza el uso de una réplica de lectura.
 
 ### Conclusión
 
