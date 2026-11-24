@@ -265,6 +265,23 @@ HTTP 429    17
 
 > Resultado: 23 respuestas `200` (la ráfaga de 20 más lo que se repuso mientras duró la prueba) y 17 `429 Too Many Requests`. El límite se cuenta por API key (`sourceCriterion: requestHeaderName: X-API-Key`).
 
+### 3.c. (Fase 3) Una API key por cliente
+
+Desde la Fase 3 hay tres clientes, cada uno con su propia key (`API_KEY` = web, `API_KEY_MOVIL`, `API_KEY_MUNICIPIO`). `api-key-auth` responde con `X-Cliente` y Traefik la copia a la petición (reemplaza la que mande el cliente). La app la devuelve en la respuesta. Salidas del 24 de noviembre de 2026, levantado desde la raíz con `docker compose up -d`:
+
+```text
+sin key       : HTTP/1.1 401 Unauthorized
+key inventada : HTTP/1.1 401 Unauthorized
+web GET       : HTTP/1.1 200 OK | X-Cliente: web | X-Db: replica | X-Instance: app-2
+movil GET     : HTTP/1.1 200 OK | X-Cliente: movil | X-Db: replica | X-Instance: app-1
+municipio POST: HTTP/1.1 201 Created | X-Cliente: municipio | X-Db: primary | X-Instance: app-2
+web + X-Cliente falso: HTTP/1.1 200 OK | X-Cliente: web | X-Db: replica | X-Instance: app-1
+rafaga web (60 en paralelo): 200x45 429x15
+movil justo despues: HTTP/1.1 200 OK | X-Cliente: movil | X-Db: replica | X-Instance: app-2
+```
+
+> Resultado: cada key se identifica como su cliente, un `X-Cliente` falso enviado por el cliente se ignora, y cuando el cliente web recibe `429` la app móvil sigue pasando: **el límite es por cliente**, no global.
+
 ---
 
 ## 4. La réplica sigue a la primaria

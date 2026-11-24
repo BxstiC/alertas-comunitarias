@@ -55,3 +55,8 @@ Por cada clase: qué hice hoy, dónde me trabé y qué haré la próxima clase. 
 - **Dónde me trabé:** sin bloqueos; todo levantó limpio con `docker compose up -d`.
 - **Qué haré la próxima clase:** presentación final.
 - **IA:** pedí a Claude Code un guion de comandos para la demostración en vivo; decidí repasar el código de `app.py`, `nginx.conf` y PostgreSQL para explicarlo y modificarlo sin ayuda en la defensa.
+## Mar 24 nov · Ajustes antes de la entrega de la Fase 3
+- **Qué hice:** revisé el proyecto contra el enunciado y corregí los puntos débiles: estimación en lecturas/escrituras por segundo (promedio, hora punta y pico de emergencia) para una escala objetivo de 10.000 vecinos; disponibilidad 99,5 %; tres tipos de cliente (web, app móvil y sistema municipal) con una API key cada uno y límite de peticiones por cliente; `docker-compose.yml` en la raíz para levantar todo con un solo comando; renombré `DISEÑO.md` a `DISENO.md` como pide el enunciado.
+- **Dónde me trabé:** la estimación anterior (5 avisos/día) no justificaba el balanceador; con los números quedó claro que 2 instancias se justifican por disponibilidad y crecimiento, no por volumen.
+- **Qué haré la próxima clase:** presentación final; ensayar la demo clonando el repositorio en un equipo del laboratorio.
+- **IA:** usé Claude Code para revisar el repositorio contra el PDF del enunciado e implementar los cambios. Decidí yo la escala objetivo (comuna de 10.000 vecinos) y los tres clientes; lo probé levantando todo desde la raíz y corriendo la demo (401 sin key, 429 en la web mientras la app móvil sigue pasando).

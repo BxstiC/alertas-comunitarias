@@ -13,7 +13,7 @@ Cliente ──► Traefik (API gateway, :8000) ──► NGINX (balanceador) ─
 | Servicio | Imagen | Rol | Puerto en el host |
 |---|---|---|---|
 | `gateway` | `traefik:v3.3` | Única entrada. Enruta `/api/v1/...`, exige API key y limita peticiones por cliente | **8000** |
-| `api-key-auth` | propia (Python) | Valida `X-API-Key` para Traefik (`forwardAuth`) | — |
+| `api-key-auth` | propia (Python) | Valida `X-API-Key` para Traefik (`forwardAuth`) e identifica al cliente: web, móvil o municipio | — |
 | `balanceador` | `nginx:1.27-alpine` | Round robin entre `app-1` y `app-2` y retira una instancia caída | — |
 | `app-1`, `app-2` | propia (FastAPI + asyncpg) | API de avisos vecinales. Instancias sin estado e idénticas. Escriben en la primaria y leen de la réplica. Responden `X-Instance` y `X-DB` | — |
 | `db-primary` | `postgres:16-alpine` | Recibe las escrituras | — |
@@ -43,14 +43,15 @@ En la raíz del repositorio:
 ### Por consola
 
 ```powershell
-git clone <URL-DEL-REPOSITORIO> alertas-vecinales
-cd alertas-vecinales\fase2
-Copy-Item .env.example .env      # opcional: sin .env se usan los valores de ejemplo
+git clone https://github.com/BxstiC/alertas-comunitarias.git alertas-vecinales
+cd alertas-vecinales
 docker compose up -d
 docker compose ps
 ```
 
-En Linux o macOS se usa `cp .env.example .env` en lugar de `Copy-Item`.
+El `docker-compose.yml` de la raíz incluye `fase2/docker-compose.yml`, así que basta un solo comando desde la raíz. También funciona igual desde la carpeta `fase2` (es el mismo proyecto de Compose, `fase2`).
+
+Sin `.env` se usan los valores de ejemplo. Para cambiar claves: `Copy-Item fase2\.env.example fase2\.env` y editar `fase2\.env` (en Linux o macOS, `cp`).
 
 La primera vez Docker construye las imágenes propias y la réplica clona a la primaria con `pg_basebackup`, lo que toma entre 30 y 60 segundos. El sistema está listo cuando `docker compose ps` muestra los 7 servicios en `Up` (los 6 con healthcheck como `healthy`; el gateway no tiene healthcheck).
 
@@ -62,6 +63,16 @@ La primera vez Docker construye las imágenes propias y la réplica clona a la p
 ## API
 
 Todas las rutas `/api/v1/...` exigen la cabecera `X-API-Key`. `/health` queda abierta.
+
+Hay una API key por tipo de cliente (variables en `fase2/.env`):
+
+| Cliente | Variable | Uso |
+|---|---|---|
+| Web (navegador de los vecinos) | `API_KEY` | Leer y publicar avisos |
+| App móvil | `API_KEY_MOVIL` | Leer y publicar avisos |
+| Sistema municipal (externo) | `API_KEY_MUNICIPIO` | Publicar cortes y emergencias automáticamente |
+
+Cada key tiene su propio límite de peticiones, y la respuesta trae `X-Cliente` con el cliente identificado.
 
 | Método y ruta | Qué hace | Base | `X-DB` |
 |---|---|---|---|
@@ -78,6 +89,7 @@ Cabeceras de respuesta:
 | Cabecera | Quién la pone | Valor |
 |---|---|---|
 | `X-Gateway` | Traefik | `traefik` |
+| `X-Cliente` | Gateway (`api-key-auth`), devuelta por la app | `web`, `movil` o `municipio` |
 | `X-Balanceador` | NGINX | `nginx` |
 | `X-Instance` | App | `app-1` o `app-2` |
 | `X-DB` | App | `primary` o `replica`: la base que **realmente** atendió la consulta |
@@ -111,8 +123,11 @@ curl.exe -i -H "X-API-Key: $apiKey" http://localhost:8000/api/v1/avisos/1
 # Balanceo: X-Instance alterna entre app-1 y app-2
 1..6 | ForEach-Object { (curl.exe -s -D - -o NUL -H "X-API-Key: $apiKey" http://localhost:8000/api/v1/avisos | Select-String '^X-Instance').Line }
 
-# Límite de peticiones: 30 peticiones seguidas -> aparecen 429
-1..30 | ForEach-Object { curl.exe -s -o NUL -w "%{http_code} " -H "X-API-Key: $apiKey" http://localhost:8000/api/v1/avisos }
+# Límite de peticiones: 60 peticiones en paralelo -> aparecen 429
+# (una por una, curl.exe va a ~10 req/s, justo el promedio permitido, y no se ve el 429)
+New-Item -ItemType Directory -Force rl | Out-Null
+curl.exe -s -Z --parallel-immediate --parallel-max 60 -w "%{http_code}\n" -o "rl\r_#1.txt" -H "X-API-Key: $apiKey" "http://localhost:8000/api/v1/avisos?n=[1-60]" | Group-Object | Select-Object Name, Count
+Remove-Item -Recurse rl
 
 # Estado de la replicación
 curl.exe -s -H "X-API-Key: $apiKey" http://localhost:8000/api/v1/replicacion
@@ -137,12 +152,14 @@ La replicación es asíncrona, así que justo después de un `POST` la réplica 
 - **Gateway y balanceador separados:** Traefik solo apunta a un backend (`http://balanceador:80`), así que el reparto entre instancias lo hace únicamente NGINX.
 - **Funciones del gateway (las dos activas):**
   1. Enrutamiento por ruta: `PathPrefix(/api/v1/)` va a la API protegida y `/health` queda abierto.
-  2. API key: middleware `forwardAuth` hacia `api-key-auth`, que compara `X-API-Key` en tiempo constante (`hmac.compare_digest`).
-  3. Límite de peticiones: 10 req/s en promedio con ráfaga de 20, contado **por API key**. Es un valor bajo a propósito para poder demostrar el `429`.
+  2. API key por cliente: middleware `forwardAuth` hacia `api-key-auth`, que compara `X-API-Key` contra las tres keys en tiempo constante (`hmac.compare_digest`) y responde `X-Cliente`. Se puede revocar un cliente sin afectar a los otros.
+  3. Límite de peticiones: 10 req/s en promedio con ráfaga de 20, contado **por API key**, o sea por cliente: si la web se satura, la app móvil y el municipio siguen pasando. Es un valor bajo a propósito para poder demostrar el `429`; con la escala objetivo (pico de 15 lecturas/s en una emergencia) el cliente web necesitaría unas 50 req/s.
 - **Detección de caídas en el balanceador:** NGINX OSS usa comprobaciones pasivas (`max_fails=2 fail_timeout=10s`). Si una instancia no responde, la petición se reintenta en la otra (`proxy_next_upstream error timeout http_502 http_504`). **No** se reintenta ante 500/503: esos errores vienen de la base compartida, y contarlos como falla de la instancia sacaba a las dos apps del balanceo (bug corregido en la Fase 3).
 - **Instancias sin estado:** la app no guarda nada en memoria ni en disco. Los pools de conexión se recrean al reiniciar. El esquema se crea en la primaria al arrancar, con un `pg_advisory_xact_lock` para que las dos instancias no choquen.
 - **Separación lectura/escritura en la app:** dos pools (`DB_PRIMARY_URL` y `DB_REPLICA_URL`). El de la réplica es `default_transaction_read_only=on` y no abre conexiones al arrancar, así una instancia puede iniciar aunque la réplica esté caída.
 - **Lecturas con respaldo:** antes de cada lectura se consulta el estado de la réplica en la misma conexión. Si está desconectada, pausada o caída, se lee en la primaria. Preferimos un dato fresco con más carga en la primaria a un dato viejo.
+- **Cortacircuito en las lecturas:** si una base no responde, durante 10 s (`DB_PAUSA_S`) las lecturas van directo a la otra sin volver a intentarla. Con un contenedor apagado, solo averiguar que su nombre no existe tarda segundos; sin esto, cada lectura pagaba ~4 s. Medido al apagar la réplica: la primera lectura tarda ~2 s y las siguientes ~12 ms. No es estado de negocio: es solo la salud de la conexión y se pierde al reiniciar.
+- **DNS rápido en las apps** (`dns_opt: timeout:1, attempts:1`): con una base apagada, Docker tardaba ~4 s en responder que su nombre no existe; ahora la app se rinde al segundo y cambia de base.
 - **`/health` no consulta la base:** si lo hiciera, una caída de PostgreSQL sacaría a ambas instancias del balanceador a la vez.
 - **Replicación asíncrona por streaming:** la primaria crea el rol `replicator` al inicializarse (`db/primary/init`) y la réplica hace `pg_basebackup --write-recovery-conf` en su primer arranque (`db/replica/replica-entrypoint.sh`). `wal_keep_size=256MB` permite que la réplica se ponga al día tras un corte. `wal_receiver_timeout` y `wal_sender_timeout` bajan a 10 s para detectar antes la desconexión.
 - **Failover manual con script:** `scripts/failover.ps1` mata la primaria, ejecuta `pg_promote()` y cambia `DB_PRIMARY_HOST=db-replica` en `.env` para que las apps escriban en la réplica promovida (se recrean de a una).
@@ -183,6 +200,7 @@ powershell -ExecutionPolicy Bypass -File scripts\restaurar.ps1 -Confirmar       
 - **Leer de respaldo en la primaria** multiplica su carga (~11 veces con la relación 10:1) mientras la réplica esté fuera. Con una sola réplica no hay otra alternativa.
 - **Comprobaciones pasivas en NGINX OSS:** la primera petición a una instancia caída paga hasta 2 s de timeout.
 - El límite de peticiones (10 req/s) es bajo a propósito para la demostración.
+- El límite es por cliente (web, móvil, municipio), no por vecino: todos los navegadores comparten la key web. Para limitar por persona harían falta cuentas de usuario con su propio token.
 - Los scripts `.sh` deben tener finales de línea LF. `.gitattributes` lo fuerza al clonar en Windows.
 
 ## Estructura
@@ -190,9 +208,11 @@ powershell -ExecutionPolicy Bypass -File scripts\restaurar.ps1 -Confirmar       
 ```text
 .
 ├── README.md
+├── BITACORA.md
+├── docker-compose.yml    (incluye fase2/docker-compose.yml: se levanta todo desde la raíz)
 ├── .gitignore / .gitattributes
 ├── docs/
-│   ├── fase1/   (PROBLEMA.md, DISEÑO.md, REQUISITOS.md, ESTIMACION_CARGA.md, diagramas/)
+│   ├── fase1/   (PROBLEMA.md, DISENO.md, REQUISITOS.md, ESTIMACION_CARGA.md, diagramas/)
 │   ├── fase2/   (EVIDENCIAS.md)
 │   └── fase3/   (PRUEBAS_DE_FALLA.md, datos/ con los CSV de las mediciones)
 └── fase2/                (el sistema completo; el nombre viene de la Fase 2)
