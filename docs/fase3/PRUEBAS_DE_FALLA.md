@@ -24,6 +24,7 @@ Si PowerShell bloquea los scripts, se ejecutan con `powershell -ExecutionPolicy 
 | 2 | Cortar la replicación | **11,6 s** de lecturas desactualizadas; después la app lee en la primaria | — |
 | 3A | Matar la primaria con la replicación sana | **RTO 6,8 s · RPO 0 avisos** | RTO ≤ 30 min ✔ · RPO ≤ 5 min ✔ |
 | 3B | Matar la primaria con la replicación cortada hace 14 s | **RTO 13,3 s · RPO 52 avisos (13,9 s)** | RPO ≤ 5 min ✔, pero con ids reutilizados ⚠ |
+| + | Apagar una base completa (24 nov) | Antes: lecturas de 3–4 s. Después del arreglo: **0 errores**, lecturas de ~12 ms | Latencia < 500 ms ✔ |
 
 ---
 
@@ -237,6 +238,39 @@ RPO medido: 52 avisos confirmados se PERDIERON (2026-11-17T20:24:10.451 a 2026-1
 - **Replicación síncrona** (`synchronous_commit=on` con `synchronous_standby_names`) solo si el negocio exigiera RPO = 0. Cuesta latencia en cada POST y, si la réplica cae, la primaria deja de aceptar escrituras. Para avisos vecinales el RPO de 5 min no lo justifica.
 - **Comprobaciones activas** en el balanceador y un `proxy_connect_timeout` más corto.
 
+## Experimento adicional · Apagar una base de datos completa (24 de noviembre)
+
+**Qué hice.** Con el sistema real levantado, apagué el contenedor de una base (`docker compose stop db-replica` y, en otra corrida, `docker compose stop db-primary`) mientras hacía un `GET` y un `POST` cada 500 ms por el gateway. Es distinto del experimento 2: ahí la réplica seguía prendida, aquí desaparece.
+
+**Qué pasó la primera vez (con el código anterior).** Las lecturas no fallaban, pero **cada una tardaba de 3 a 4 s**. Con el cliente esperando 3 s, todas las lecturas se cortaron (`000`). Medí la causa dentro de la app:
+
+```text
+db-replica apagada -> resolver el nombre tarda 4,03 s ("Name or service not known")
+noexiste-xyz       -> 4,0 s
+```
+
+Con un contenedor apagado, el DNS interno de Docker no conoce el nombre y se lo pregunta a un servidor externo, que tarda ~4 s en responder que no existe. La app volvía a preguntar en **cada** lectura.
+
+**Qué cambié.**
+
+1. `dns_opt: timeout:1, attempts:1` en las apps: se rinden al segundo.
+2. Un cortacircuito en `leer()`: si una base falla, durante 10 s (`DB_PAUSA_S`) las lecturas van directo a la otra sin volver a intentarla.
+
+**Resultado después del cambio** (GET y POST cada 500 ms):
+
+| Base apagada | Lecturas | Escrituras | Cabeceras |
+|---|---|---|---|
+| Réplica | 16 de 16 con `200` | 16 de 16 con `201` | `X-DB: primary`, `X-Replica-Estado: caida` |
+| Primaria (sin failover) | 5 de 5 con `200` | `503` (esperado) | `X-DB: replica`, `X-Replica-Estado: desconectada` |
+
+Con la réplica apagada, la primera lectura de cada instancia tarda ~2 s y las siguientes **~12 ms**. Al volver a prender la réplica, las lecturas regresan solas a `X-DB: replica`. Durante todas las pruebas la RAM del equipo no pasó del 75 %.
+
+**Qué aprendí.**
+
+- Un mismo componente caído se puede ver de dos formas: la réplica desconectada responde rápido con datos viejos; la réplica apagada no responde y hace esperar. Hay que probar las dos.
+- Probar en vivo encontró algo que el diseño no consideraba: el tiempo de resolver un nombre. Un timeout bien puesto vale tanto como la redundancia.
+- Al agregar el cortacircuito introduje un error (las lecturas daban `500` con la primaria apagada) y lo encontré repitiendo la prueba. Por eso cada cambio se vuelve a probar con la misma falla.
+
 ## Cómo repetir las pruebas
 
 ```powershell
@@ -256,6 +290,10 @@ powershell -ExecutionPolicy Bypass -File scripts\replicacion.ps1 -Accion restaur
 powershell -ExecutionPolicy Bypass -File scripts\escrituras.ps1 -Segundos 40   # consola 1
 powershell -ExecutionPolicy Bypass -File scripts\failover.ps1                   # consola 2, a los ~10 s
 powershell -ExecutionPolicy Bypass -File scripts\medir-rpo-rto.ps1 -Csv escrituras.csv
+
+# Experimento adicional: apagar una base completa
+docker compose stop db-replica   # o db-primary; leer y escribir mirando X-DB y X-Replica-Estado
+docker compose start db-replica
 
 # Volver al estado inicial (BORRA los datos)
 powershell -ExecutionPolicy Bypass -File scripts\restaurar.ps1 -Confirmar
