@@ -208,10 +208,16 @@ class InstanceHeaderMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # El gateway agrega X-Cliente (web, movil o municipio) según la API key; se devuelve
+        # en la respuesta para que se vea qué cliente hizo la petición.
+        cliente = dict(scope.get("headers", [])).get(b"x-cliente")
+
         async def send_con_cabecera(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"x-instance"]
                 headers.append((b"x-instance", INSTANCE_ID.encode("latin-1")))
+                if cliente:
+                    headers.append((b"x-cliente", cliente))
                 message["headers"] = headers
             await send(message)
 

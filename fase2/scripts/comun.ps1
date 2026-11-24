@@ -31,6 +31,7 @@ function Hora { (Get-Date).ToString('HH:mm:ss.fff') }
 $DbUser = Leer-Env 'POSTGRES_USER' 'app_user'
 $DbName = Leer-Env 'POSTGRES_DB' 'avisos'
 $ApiKey = Leer-Env 'API_KEY' 'dev-api-key-change-me-to-a-long-random-value'
+$ApiKeyMovil = Leer-Env 'API_KEY_MOVIL' 'dev-movil-key-change-me-to-a-long-random-value'
 
 # Servicio que hoy actua como primaria (cambia despues de scripts\failover.ps1).
 function Servicio-Primaria {

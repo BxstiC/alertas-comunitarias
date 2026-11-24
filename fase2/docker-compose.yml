@@ -21,7 +21,10 @@ services:
     build:
       context: ./gateway/auth
     environment:
+      # Una API key por cliente: web, app móvil y sistema municipal.
       API_KEY: ${API_KEY:-dev-api-key-change-me-to-a-long-random-value}
+      API_KEY_MOVIL: ${API_KEY_MOVIL:-dev-movil-key-change-me-to-a-long-random-value}
+      API_KEY_MUNICIPIO: ${API_KEY_MUNICIPIO:-dev-municipio-key-change-me-to-a-long-random-value}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
       interval: 10s
