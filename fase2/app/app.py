@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,10 @@ DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "1"))
 DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "10"))
 DB_COMMAND_TIMEOUT = float(os.getenv("DB_COMMAND_TIMEOUT", "5"))
 DB_CONNECT_RETRIES = int(os.getenv("DB_CONNECT_RETRIES", "10"))
+# Cortacircuito: si una base no responde, durante estos segundos las lecturas van
+# directo a la otra base sin volver a intentarla (con el contenedor apagado, solo resolver
+# su nombre tarda segundos, y se pagaría en cada lectura).
+DB_PAUSA_S = float(os.getenv("DB_PAUSA_S", "10"))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -303,35 +308,49 @@ def clasificar_replica(fila: asyncpg.Record) -> str:
     return "streaming"
 
 
+# Hasta cuándo (reloj monotónico) las LECTURAS se saltan cada base. No es dato de negocio:
+# es solo el estado de salud de una conexión, se pierde al reiniciar y no afecta a la otra
+# instancia. Las escrituras siempre intentan la primaria.
+_replica_pausada_hasta = 0.0
+_primaria_pausada_hasta = 0.0
+
+
 async def leer(request: Request, consulta: Consulta) -> Lectura:
     """
     1. Réplica conectada a la primaria (streaming) o ya promovida -> se lee en la réplica.
     2. Réplica desconectada, pausada o caída -> se lee en la primaria (dato fresco).
+       Si está caída, se salta por DB_PAUSA_S segundos (cortacircuito).
     3. Primaria también caída pero la réplica responde -> dato posiblemente viejo,
        avisado con X-Datos-Desactualizados (en un tablón de avisos es mejor que un 503).
     """
+    global _replica_pausada_hasta, _primaria_pausada_hasta
     replica: asyncpg.Pool = request.app.state.replica
     primary: asyncpg.Pool = request.app.state.primary
 
     estado = "caida"
-    try:
-        async with replica.acquire() as conn:
-            estado = clasificar_replica(await conn.fetchrow(ESTADO_REPLICA_SQL))
-            if estado in ("streaming", "promovida"):
-                return Lectura(await consulta(conn), "replica", estado)
-    except DB_ERRORS as exc:
-        log.warning("Réplica no disponible: %s", exc)
+    if time.monotonic() >= _replica_pausada_hasta:
+        try:
+            async with replica.acquire() as conn:
+                estado = clasificar_replica(await conn.fetchrow(ESTADO_REPLICA_SQL))
+                if estado in ("streaming", "promovida"):
+                    return Lectura(await consulta(conn), "replica", estado)
+        except DB_ERRORS as exc:
+            _replica_pausada_hasta = time.monotonic() + DB_PAUSA_S
+            log.warning("Réplica no disponible: %s. Se lee en la primaria los próximos %.0f s", exc, DB_PAUSA_S)
 
-    log.warning("Réplica en estado '%s': la lectura la atiende la primaria", estado)
-    try:
-        async with primary.acquire() as conn:
-            return Lectura(await consulta(conn), "primary", estado)
-    except DB_ERRORS:
-        if estado == "caida":
-            raise
-        log.error("Primaria caída y réplica '%s': entrego datos posiblemente desactualizados", estado)
-        async with replica.acquire() as conn:
-            return Lectura(await consulta(conn), "replica", estado)
+    if estado == "caida" or time.monotonic() >= _primaria_pausada_hasta:
+        log.warning("Réplica en estado '%s': la lectura la atiende la primaria", estado)
+        try:
+            async with primary.acquire() as conn:
+                return Lectura(await consulta(conn), "primary", estado)
+        except DB_ERRORS:
+            if estado == "caida":
+                raise
+            _primaria_pausada_hasta = time.monotonic() + DB_PAUSA_S
+
+    log.error("Primaria caída y réplica '%s': entrego datos posiblemente desactualizados", estado)
+    async with replica.acquire() as conn:
+        return Lectura(await consulta(conn), "replica", estado)
 
 
 # ---------------------------------------------------------------------------

@@ -62,6 +62,11 @@ services:
       # DB_PRIMARY_HOST permite apuntar las escrituras a la réplica promovida (scripts/failover.ps1).
       DB_PRIMARY_URL: postgresql://${POSTGRES_USER:-app_user}:${APP_DB_PASSWORD:-dev_app_password_change_me}@${DB_PRIMARY_HOST:-db-primary}:5432/${POSTGRES_DB:-avisos}
       DB_REPLICA_URL: postgresql://${POSTGRES_USER:-app_user}:${APP_DB_PASSWORD:-dev_app_password_change_me}@db-replica:5432/${POSTGRES_DB:-avisos}
+    # Si una base está apagada, Docker tarda ~4 s en responder que su nombre no existe.
+    # Con esto la app se rinde al segundo y pasa a la otra base (prueba de falla en vivo).
+    dns_opt: &dns-rapido
+      - timeout:1
+      - attempts:1
     depends_on:
       db-primary:
         condition: service_healthy
@@ -84,6 +89,7 @@ services:
     environment:
       <<: *app-environment
       INSTANCE_ID: app-2
+    dns_opt: *dns-rapido
     depends_on:
       db-primary:
         condition: service_healthy
