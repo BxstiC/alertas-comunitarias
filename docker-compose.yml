@@ -1,0 +1,9 @@
+# Permite levantar todo desde la raíz del repositorio con un solo comando:
+#   docker compose up -d
+# La definición real está en fase2/docker-compose.yml (se incluye tal cual).
+# name: fase2 hace que sea el mismo proyecto que al ejecutar desde la carpeta fase2,
+# así los scripts de fase2/scripts ven los mismos contenedores y volúmenes.
+name: fase2
+
+include:
+  - path: fase2/docker-compose.yml
