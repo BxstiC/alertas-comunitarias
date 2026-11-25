@@ -60,3 +60,9 @@ Por cada clase: qué hice hoy, dónde me trabé y qué haré la próxima clase. 
 - **Dónde me trabé:** la estimación anterior (5 avisos/día) no justificaba el balanceador; con los números quedó claro que 2 instancias se justifican por disponibilidad y crecimiento, no por volumen.
 - **Qué haré la próxima clase:** presentación final; ensayar la demo clonando el repositorio en un equipo del laboratorio.
 - **IA:** usé Claude Code para revisar el repositorio contra el PDF del enunciado e implementar los cambios. Decidí yo la escala objetivo (comuna de 10.000 vecinos) y los tres clientes; lo probé levantando todo desde la raíz y corriendo la demo (401 sin key, 429 en la web mientras la app móvil sigue pasando).
+
+## Mié 25 nov · Presentación y cierre de la Fase 3
+- **Qué hice:** saqué capturas reales de la consola de cada falla (apagar una instancia, cortar la réplica y failover, con RTO 12,6 s y RPO 0) y las agregué a `PRUEBAS_DE_FALLA.md` junto con el CSV de esa corrida; corregí un dato que había quedado de la estimación antigua (la carga extra de la primaria cuando cae la réplica) y preparé la carpeta de entrega.
+- **Dónde me trabé:** se terminó el tiempo en la sala antes de sacar la captura del failover, así que la terminé en casa. Por eso las capturas tienen horas distintas.
+- **Qué haré a continuación:** entregar el repositorio con la etiqueta `fase-3`.
+- **IA:** usé Claude Code para ejecutar las pruebas, sacar las capturas de la consola y actualizar los documentos. Yo decidí agregar las capturas a la entrega y qué fallas mostrar.

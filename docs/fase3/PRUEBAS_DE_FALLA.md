@@ -151,7 +151,7 @@ X-Replica-Estado: streaming
 
 - La réplica **no sabe al instante** que perdió a la primaria. Lo descubre cuando vence `wal_receiver_timeout`. Con el valor por defecto (60 s) la ventana habría sido de ~1 minuto; por eso lo bajé a `10s` (y `wal_sender_timeout=10s` en la primaria). La ventana medida, 11,6 s, es ese timeout más el tiempo de la prueba.
 - Durante esa ventana la lista puede estar atrasada, pero el **detalle** de un aviso recién escrito nunca da un 404 falso, porque antes de responder 404 la app confirma en la primaria.
-- Leer en la primaria cuando la réplica falla tiene costo: con la relación 10:1 de lecturas a escrituras, la primaria pasa a recibir ~11 veces su carga normal. A la escala de esta maqueta no importa; en producción habría al menos 2 réplicas.
+- Leer en la primaria cuando la réplica falla tiene costo: con la relación de diseño de 150 lecturas por escritura, la primaria pasa a atender unas 150 veces más consultas que solo escribiendo. A la escala de esta maqueta no importa; en producción habría al menos 2 réplicas.
 
 **Captura (25 de noviembre).** Después de cortar la replicación se escribe el aviso 2: la lectura sale de la réplica, todavía en `streaming`, con `Total = 1` (dato desactualizado). A los 12 s la réplica ya sabe que está `desconectada` y la app lee en la primaria, con `Total = 2`. Al final, `estado` muestra que la primaria va en el id 2 y la réplica se quedó en el 1:
 

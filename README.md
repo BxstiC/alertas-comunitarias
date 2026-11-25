@@ -197,7 +197,7 @@ powershell -ExecutionPolicy Bypass -File scripts\restaurar.ps1 -Confirmar       
 - **Ids reutilizables tras un failover con pérdida:** la secuencia de la réplica promovida puede ir atrasada y repetir ids que la primaria vieja ya había entregado.
 - **Split brain:** después del failover no se debe volver a levantar `db-primary` tal cual. Hay que reconstruirla como réplica nueva o usar `restaurar.ps1`.
 - **Puntos únicos de falla:** gateway, balanceador y (hasta el failover) la primaria son instancias únicas.
-- **Leer de respaldo en la primaria** multiplica su carga (~11 veces con la relación 10:1) mientras la réplica esté fuera. Con una sola réplica no hay otra alternativa.
+- **Leer de respaldo en la primaria** multiplica su carga mientras la réplica esté fuera: con la relación de diseño de 150 lecturas por escritura, la primaria pasa a atender unas 150 veces más consultas que solo escribiendo. Con una sola réplica no hay otra alternativa.
 - **Comprobaciones pasivas en NGINX OSS:** la primera petición a una instancia caída paga hasta 2 s de timeout.
 - El límite de peticiones (10 req/s) es bajo a propósito para la demostración.
 - El límite es por cliente (web, móvil, municipio), no por vecino: todos los navegadores comparten la key web. Para limitar por persona harían falta cuentas de usuario con su propio token.
