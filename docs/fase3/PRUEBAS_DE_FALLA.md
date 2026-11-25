@@ -16,6 +16,10 @@ Todos los scripts están en [`fase2/scripts/`](../../fase2/scripts/) y se ejecut
 
 Si PowerShell bloquea los scripts, se ejecutan con `powershell -ExecutionPolicy Bypass -File scripts\<script>.ps1`.
 
+> **Capturas.** Al final de cada experimento hay una captura de pantalla de la consola. Las capturas son de una segunda corrida, el **25 de noviembre de 2026**, con el sistema principal (`fase2-...`) y la versión final del código. Por eso sus números pueden diferir un poco de las mediciones del 17 de noviembre que están en el texto.
+
+![Los 7 servicios corriendo; solo el gateway expone el puerto 8000](capturas/0-servicios-arriba.png)
+
 ## Resumen
 
 | # | Experimento | Resultado medido | Objetivo (Fase 1) |
@@ -63,6 +67,10 @@ t            http   ms inst
 - Como las instancias no tienen estado, da igual cuál responde: perder una no pierde datos ni sesiones.
 - Las comprobaciones pasivas tienen un costo: alguien "paga" el timeout para descubrir la caída. Con comprobaciones activas (HAProxy o NGINX Plus) la instancia sale antes de que la toque un cliente. Bajar `proxy_connect_timeout` (por ejemplo a 500 ms) también reduce ese costo.
 - **Bug corregido en esta fase:** antes `proxy_next_upstream` incluía `http_500` y `http_503`. Cuando cae la base, *ambas* apps devuelven 503, NGINX las marcaba a las dos como caídas y respondía 502 también a las lecturas. Ahora solo se reintenta cuando falla la instancia (`error timeout http_502 http_504`), no cuando falla la base compartida.
+
+**Captura (25 de noviembre).** Con `app-1` detenida, las cuatro lecturas responden `200` y todas las atiende `app-2`:
+
+![app-1 apagada: las cuatro lecturas responden 200 desde app-2](capturas/1-apagar-instancia.png)
 
 ---
 
@@ -144,6 +152,10 @@ X-Replica-Estado: streaming
 - La réplica **no sabe al instante** que perdió a la primaria. Lo descubre cuando vence `wal_receiver_timeout`. Con el valor por defecto (60 s) la ventana habría sido de ~1 minuto; por eso lo bajé a `10s` (y `wal_sender_timeout=10s` en la primaria). La ventana medida, 11,6 s, es ese timeout más el tiempo de la prueba.
 - Durante esa ventana la lista puede estar atrasada, pero el **detalle** de un aviso recién escrito nunca da un 404 falso, porque antes de responder 404 la app confirma en la primaria.
 - Leer en la primaria cuando la réplica falla tiene costo: con la relación 10:1 de lecturas a escrituras, la primaria pasa a recibir ~11 veces su carga normal. A la escala de esta maqueta no importa; en producción habría al menos 2 réplicas.
+
+**Captura (25 de noviembre).** Después de cortar la replicación se escribe el aviso 2: la lectura sale de la réplica, todavía en `streaming`, con `Total = 1` (dato desactualizado). A los 12 s la réplica ya sabe que está `desconectada` y la app lee en la primaria, con `Total = 2`. Al final, `estado` muestra que la primaria va en el id 2 y la réplica se quedó en el 1:
+
+![Replicación cortada: dato desactualizado y, a los 12 s, lectura desde la primaria](capturas/2-cortar-replica.png)
 
 ---
 
@@ -237,6 +249,16 @@ RPO medido: 52 avisos confirmados se PERDIERON (2026-11-17T20:24:10.451 a 2026-1
 - **Failover automático** con Patroni (más etcd), o `target_session_attrs=read-write` en la URL de la app con varios hosts, para que las apps encuentren solas la nueva primaria sin recrearse.
 - **Replicación síncrona** (`synchronous_commit=on` con `synchronous_standby_names`) solo si el negocio exigiera RPO = 0. Cuesta latencia en cada POST y, si la réplica cae, la primaria deja de aceptar escrituras. Para avisos vecinales el RPO de 5 min no lo justifica.
 - **Comprobaciones activas** en el balanceador y un `proxy_connect_timeout` más corto.
+
+### Capturas (25 de noviembre)
+
+Una corrida nueva del caso 3A, con la réplica al día: `escrituras.ps1` escribió durante 30 s y a los 10 s se lanzó `failover.ps1`. El failover completo, desde el kill hasta las dos apps listas, tardó 18,2 s:
+
+![Failover: se mata la primaria, se promueve la réplica y se recrean las apps](capturas/3a-failover.png)
+
+La medición de esa corrida da **RTO 12,6 s** y **RPO 0 avisos**: de 57 escrituras, 52 confirmadas y 5 fallidas durante el corte. El CSV está en [`datos/failover-2026-11-25.csv`](datos/failover-2026-11-25.csv). El RTO es mayor que los 6,8 s del 17 de noviembre porque esta vez `app-1` tardó 8,5 s en recrearse (5,1 s el 17). Los dos quedan muy por debajo del objetivo de 30 minutos.
+
+![Medición de esa corrida: RTO 12,6 s y RPO 0 avisos](capturas/3b-rpo-rto.png)
 
 ## Experimento adicional · Apagar una base de datos completa (24 de noviembre)
 
