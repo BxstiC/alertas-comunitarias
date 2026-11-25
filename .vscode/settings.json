@@ -1,4 +1,7 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python.terminal.useEnvFile": true
+    "python.terminal.useEnvFile": true,
+    "workbench.colorTheme": "Default Light Modern",
+    "terminal.integrated.fontSize": 18,
+    "editor.fontSize": 18
 }
