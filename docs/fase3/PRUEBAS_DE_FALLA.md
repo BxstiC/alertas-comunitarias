@@ -1,6 +1,8 @@
 # Pruebas de falla · Fase 3
 
-Todas las salidas de este documento son reales. Se obtuvieron el 17 de noviembre de 2026 en PowerShell (Windows 11, Docker Desktop) con el sistema completo de la Fase 3 levantado desde cero.
+Todas las salidas de este documento son reales. Se obtuvieron en PowerShell (Windows 11, Docker Desktop) con el sistema completo de la Fase 3 levantado desde cero, después de programar la aplicación real (18 de noviembre) y antes de subirlas al repositorio (19 de noviembre, 09:03).
+
+> **Sobre las fechas.** Las horas de las salidas y de los CSV dicen **17 de noviembre** porque el reloj del computador tenía mal la fecha durante las pruebas. Se dejaron tal cual para no alterar los datos medidos.
 
 > Para no borrar los datos del despliegue principal, las mediciones se hicieron en un proyecto de Compose aparte (`$env:COMPOSE_PROJECT_NAME='alertas-f3'`). Por eso los contenedores aparecen como `alertas-f3-...` en vez de `fase2-...`. Los comandos y la configuración son exactamente los mismos.
 
@@ -16,7 +18,7 @@ Todos los scripts están en [`fase2/scripts/`](../../fase2/scripts/) y se ejecut
 
 Si PowerShell bloquea los scripts, se ejecutan con `powershell -ExecutionPolicy Bypass -File scripts\<script>.ps1`.
 
-> **Capturas.** Al final de cada experimento hay una captura de pantalla de la consola. Las capturas son de una segunda corrida, el **25 de noviembre de 2026**, con el sistema principal (`fase2-...`) y la versión final del código. Por eso sus números pueden diferir un poco de las mediciones del 17 de noviembre que están en el texto.
+> **Capturas.** Al final de cada experimento hay una captura de pantalla de la consola. Las capturas son de una segunda corrida, el **25 de noviembre de 2026**, con el sistema principal (`fase2-...`) y la versión final del código. Por eso sus números pueden diferir un poco de las mediciones de la primera corrida que están en el texto.
 
 ![Los 7 servicios corriendo; solo el gateway expone el puerto 8000](capturas/0-servicios-arriba.png)
 
@@ -256,7 +258,7 @@ Una corrida nueva del caso 3A, con la réplica al día: `escrituras.ps1` escribi
 
 ![Failover: se mata la primaria, se promueve la réplica y se recrean las apps](capturas/3a-failover.png)
 
-La medición de esa corrida da **RTO 12,6 s** y **RPO 0 avisos**: de 57 escrituras, 52 confirmadas y 5 fallidas durante el corte. El CSV está en [`datos/failover-2026-11-25.csv`](datos/failover-2026-11-25.csv). El RTO es mayor que los 6,8 s del 17 de noviembre porque esta vez `app-1` tardó 8,5 s en recrearse (5,1 s el 17). Los dos quedan muy por debajo del objetivo de 30 minutos.
+La medición de esa corrida da **RTO 12,6 s** y **RPO 0 avisos**: de 57 escrituras, 52 confirmadas y 5 fallidas durante el corte. El CSV está en [`datos/failover-2026-11-25.csv`](datos/failover-2026-11-25.csv). El RTO es mayor que los 6,8 s de la primera corrida porque esta vez `app-1` tardó 8,5 s en recrearse (5,1 s en la primera). Los dos quedan muy por debajo del objetivo de 30 minutos.
 
 ![Medición de esa corrida: RTO 12,6 s y RPO 0 avisos](capturas/3b-rpo-rto.png)
 
